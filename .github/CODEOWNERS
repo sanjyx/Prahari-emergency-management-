@@ -1,0 +1,12 @@
+# PRAHARI Codeowners
+# Global default owners
+* @sanjyx
+
+# Core architecture and configuration
+/src/config/ @sanjyx
+/src/services/ @sanjyx
+/src/types.ts @sanjyx
+
+# Feature modules
+/src/features/ @sanjyx
+/src/components/ @sanjyx

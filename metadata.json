@@ -1,0 +1,6 @@
+{
+  "name": "PRAHARI: Hilly Emergency & Disaster Management Platform",
+  "description": "Full-stack disaster and emergency management platform for hilly regions featuring real-time risk modeling, incident workflow, responder tracking with Last Known Location, offline sync, and A* emergency pathfinding.",
+  "requestFramePermissions": ["geolocation", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

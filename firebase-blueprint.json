@@ -1,0 +1,157 @@
+{
+  "entities": {
+    "user": {
+      "title": "User",
+      "description": "User profile with role-based attributes and last known location",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 150 },
+        "role": { "type": "string", "enum": ["citizen", "responder", "authority", "admin"] },
+        "phone": { "type": "string", "maxLength": 25 },
+        "unit": { "type": "string", "maxLength": 100 },
+        "lastKnownLocation": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" },
+            "timestamp": { "type": "number" },
+            "accuracy": { "type": "number" },
+            "source": { "type": "string", "enum": ["gps", "network", "manual", "cached"] },
+            "zoneId": { "type": "string", "maxLength": 50 },
+            "zoneName": { "type": "string", "maxLength": 100 }
+          }
+        },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "email", "role"]
+    },
+    "incident": {
+      "title": "Incident",
+      "description": "Disaster or emergency incident report in a hilly zone",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 150 },
+        "type": {
+          "type": "string",
+          "enum": [
+            "flash_flood",
+            "landslide",
+            "river_burst",
+            "road_block",
+            "bridge_damage",
+            "trapped_civilians",
+            "medical_emergency"
+          ]
+        },
+        "severity": { "type": "string", "enum": ["low", "moderate", "high", "critical"] },
+        "status": {
+          "type": "string",
+          "enum": ["reported", "investigating", "assigned", "in_progress", "resolved", "closed"]
+        },
+        "description": { "type": "string", "maxLength": 2000 },
+        "zoneId": { "type": "string", "maxLength": 50 },
+        "zoneName": { "type": "string", "maxLength": 100 },
+        "location": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" },
+            "landmark": { "type": "string", "maxLength": 200 },
+            "mapX": { "type": "number" },
+            "mapY": { "type": "number" }
+          },
+          "required": ["lat", "lng"]
+        },
+        "reportedBy": {
+          "type": "object",
+          "properties": {
+            "uid": { "type": "string", "maxLength": 128 },
+            "name": { "type": "string", "maxLength": 100 },
+            "role": { "type": "string", "maxLength": 50 },
+            "contact": { "type": "string", "maxLength": 50 }
+          },
+          "required": ["uid", "name"]
+        },
+        "assignedTo": {
+          "type": "object",
+          "properties": {
+            "uid": { "type": "string", "maxLength": 128 },
+            "name": { "type": "string", "maxLength": 100 },
+            "unit": { "type": "string", "maxLength": 100 },
+            "phone": { "type": "string", "maxLength": 50 },
+            "assignedAt": { "type": "number" }
+          }
+        },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" },
+        "aiTriageSummary": { "type": "string", "maxLength": 1000 }
+      },
+      "required": ["id", "title", "type", "severity", "status", "description", "zoneId", "location", "reportedBy", "createdAt", "updatedAt"]
+    },
+    "alert": {
+      "title": "Alert",
+      "description": "Emergency broadcast alert dispatched to citizens and response units",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "zoneId": { "type": "string", "maxLength": 50 },
+        "zone": { "type": "string", "maxLength": 100 },
+        "level": { "type": "string", "enum": ["Low", "Moderate", "High", "Critical"] },
+        "message": { "type": "string", "maxLength": 500 },
+        "issued": { "type": "string", "maxLength": 100 },
+        "channel": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["Active", "Acknowledged", "Standby"] },
+        "createdBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "zoneId", "zone", "level", "message", "issued", "channel", "status"]
+    },
+    "responder": {
+      "title": "Responder",
+      "description": "Field responder unit details and live operational telemetry",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "role": { "type": "string", "enum": ["responder"] },
+        "unit": { "type": "string", "maxLength": 100 },
+        "phone": { "type": "string", "maxLength": 50 },
+        "lastKnownLocation": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" },
+            "timestamp": { "type": "number" },
+            "accuracy": { "type": "number" },
+            "source": { "type": "string", "maxLength": 50 },
+            "zoneId": { "type": "string", "maxLength": 50 },
+            "zoneName": { "type": "string", "maxLength": 100 }
+          },
+          "required": ["lat", "lng", "timestamp"]
+        },
+        "isOnline": { "type": "boolean" }
+      },
+      "required": ["uid", "name", "role", "unit"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/user" },
+      "description": "User profiles and credentials"
+    },
+    "/incidents/{incidentId}": {
+      "schema": { "$ref": "#/entities/incident" },
+      "description": "Active and historic emergency incidents"
+    },
+    "/alerts/{alertId}": {
+      "schema": { "$ref": "#/entities/alert" },
+      "description": "Broadcast emergency alerts and warnings"
+    },
+    "/responders/{responderId}": {
+      "schema": { "$ref": "#/entities/responder" },
+      "description": "Field responders and their last known location telemetry"
+    }
+  }
+}

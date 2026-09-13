@@ -1,0 +1,155 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Helper Primitives
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isAuthorityOrAdmin() {
+      return isSignedIn() && (
+        getUserRole() == 'authority' || 
+        getUserRole() == 'admin' ||
+        (request.auth.token.email != null && request.auth.token.email == 'rasmitanayak7803@gmail.com')
+      );
+    }
+
+    function isResponder() {
+      return isSignedIn() && (
+        getUserRole() == 'responder' ||
+        isAuthorityOrAdmin()
+      );
+    }
+
+    // Validation helper for User
+    function isValidUser(data) {
+      return data.uid is string && data.uid.size() <= 128 &&
+             data.name is string && data.name.size() <= 100 &&
+             data.email is string && data.email.size() <= 150 &&
+             data.role in ['citizen', 'responder', 'authority', 'admin'];
+    }
+
+    // Validation helper for Incident
+    function isValidIncident(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.title is string && data.title.size() <= 150 &&
+             data.type in ['flash_flood', 'landslide', 'river_burst', 'road_block', 'bridge_damage', 'trapped_civilians', 'medical_emergency'] &&
+             data.severity in ['low', 'moderate', 'high', 'critical'] &&
+             data.status in ['reported', 'investigating', 'assigned', 'in_progress', 'resolved', 'closed'] &&
+             data.description is string && data.description.size() <= 2000 &&
+             data.zoneId is string && data.zoneId.size() <= 50 &&
+             data.location is map &&
+             data.location.lat is number &&
+             data.location.lng is number &&
+             data.reportedBy is map &&
+             data.reportedBy.uid is string &&
+             data.createdAt is number &&
+             data.updatedAt is number;
+    }
+
+    // Validation helper for Alert
+    function isValidAlert(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.zoneId is string && data.zoneId.size() <= 50 &&
+             data.zone is string && data.zone.size() <= 100 &&
+             data.level in ['Low', 'Moderate', 'High', 'Critical'] &&
+             data.message is string && data.message.size() <= 500 &&
+             data.issued is string && data.issued.size() <= 100 &&
+             data.channel is string && data.channel.size() <= 100 &&
+             data.status in ['Active', 'Acknowledged', 'Standby'];
+    }
+
+    // Validation helper for Responder
+    function isValidResponder(data) {
+      return data.uid is string && data.uid.size() <= 128 &&
+             data.name is string && data.name.size() <= 100 &&
+             data.role == 'responder' &&
+             data.unit is string && data.unit.size() <= 100;
+    }
+
+    // USERS Collection
+    match /users/{userId} {
+      allow get: if isSignedIn() && (isOwner(userId) || isAuthorityOrAdmin());
+      allow list: if isAuthorityOrAdmin();
+      
+      allow create: if isSignedIn() && isOwner(userId) && isValidUser(incoming()) && incoming().uid == request.auth.uid;
+      
+      allow update: if isSignedIn() && isValidUser(incoming()) && (
+        (isOwner(userId) && incoming().role == existing().role && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'lastKnownLocation', 'updatedAt'])) ||
+        isAuthorityOrAdmin()
+      );
+      
+      allow delete: if isAuthorityOrAdmin();
+    }
+
+    // INCIDENTS Collection
+    match /incidents/{incidentId} {
+      allow get, list: if isSignedIn();
+      
+      // Citizens can create reports with their own UID
+      allow create: if isSignedIn() && isValidIncident(incoming()) && (
+        incoming().reportedBy.uid == request.auth.uid || isAuthorityOrAdmin()
+      );
+      
+      // Updates: Status updates by Responders or Full edits by Authority/Admin
+      allow update: if isSignedIn() && isValidIncident(incoming()) && (
+        isAuthorityOrAdmin() ||
+        (
+          // Assigned Responder can update status and notes
+          existing().assignedTo.uid == request.auth.uid &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt', 'notes'])
+        )
+      );
+      
+      allow delete: if isAuthorityOrAdmin();
+    }
+
+    // ALERTS Collection
+    match /alerts/{alertId} {
+      allow get, list: if true; // Public safety alerts must be readable by all
+      allow create, update, delete: if isAuthorityOrAdmin() && (request.method == 'delete' || isValidAlert(incoming()));
+    }
+
+    // RESPONDERS Collection (Last Known Locations & Field Units)
+    match /responders/{responderId} {
+      // Only Responders and Authorities can view other responders' last known location (Privacy protection)
+      allow get, list: if isResponder() || isAuthorityOrAdmin();
+      
+      allow create: if isAuthorityOrAdmin() && isValidResponder(incoming());
+      
+      allow update: if isSignedIn() && isValidResponder(incoming()) && (
+        (isOwner(responderId) && incoming().diff(existing()).affectedKeys().hasOnly(['lastKnownLocation', 'isOnline', 'phone'])) ||
+        isAuthorityOrAdmin()
+      );
+      
+      allow delete: if isAuthorityOrAdmin();
+    }
+  }
+}
