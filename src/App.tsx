@@ -11,6 +11,7 @@ import { AlertsView } from './components/AlertsView';
 import { AboutView } from './components/AboutView';
 import { ConnectivityModal } from './components/ConnectivityModal';
 import { VoiceReportModal } from './components/VoiceReportModal';
+import { ScenarioConsole } from './components/ScenarioConsole';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import {
   AStarPathResult,
@@ -39,6 +40,7 @@ export default function App() {
   const [selectedZone, setSelectedZone] = useState<Zone>(ZONES[0]);
   const [rainMultiplier, setRainMultiplier] = useState<number>(1.0);
   const [voiceReportModalOpen, setVoiceReportModalOpen] = useState(false);
+  const [scenarioConsoleOpen, setScenarioConsoleOpen] = useState(false);
   const [featureVersion, setFeatureVersion] = useState(0);
 
   // Core Data Collections via isolated services
@@ -227,6 +229,7 @@ export default function App() {
         isSharingLocation={isSharingLocation}
         locationStatus={locationStatus}
         onFeaturesUpdated={handleFeaturesUpdated}
+        onOpenScenarioConsole={() => setScenarioConsoleOpen(true)}
       />
 
       {/* Main Content Viewport with Error Isolation */}
@@ -241,6 +244,7 @@ export default function App() {
               riskResult={currentRisk}
               onOpenIncidentModal={() => setActiveTab('incidents')}
               onOpenVoiceModal={() => setVoiceReportModalOpen(true)}
+              onOpenScenarioConsole={() => setScenarioConsoleOpen(true)}
               onNavigateToRouting={() => setActiveTab('routing')}
               incidents={incidents}
               alerts={alerts}
@@ -369,12 +373,61 @@ export default function App() {
           currentUser={currentUser}
           selectedZone={selectedZone}
           onSubmitIncident={handleCreateIncident}
+          isSimulationMode={scenarioConsoleOpen}
           onSwitchToManual={() => {
             setVoiceReportModalOpen(false);
             setActiveTab('incidents');
           }}
         />
       )}
+
+      {/* Controlled Demonstration Scenario Console */}
+      <ScenarioConsole
+        isOpen={scenarioConsoleOpen}
+        onClose={() => setScenarioConsoleOpen(false)}
+        selectedZone={selectedZone}
+        onSelectZone={setSelectedZone}
+        onSetRainMultiplier={setRainMultiplier}
+        onSetSystemStatus={(status) => {
+          // Status updated
+        }}
+        onOpenVoiceModal={() => setVoiceReportModalOpen(true)}
+        onSetLowConnectivity={(isLow) => {
+          offlineSyncManager.setMode(isLow ? 'low_connectivity' : 'online', true);
+        }}
+        onTriggerRoadBlock={(blocked) => {
+          if (blocked) {
+            const blockedEdges = new Set(['edge-1']);
+            const altRoute = findAStarEmergencyRoute(
+              ROUTE_NODES[0].id,
+              ROUTE_NODES[3].id,
+              ROUTE_NODES,
+              ROUTE_EDGES,
+              zoneRiskLevels,
+              blockedEdges
+            );
+            setActiveRoute(altRoute);
+          } else {
+            const normalRoute = findAStarEmergencyRoute(
+              ROUTE_NODES[0].id,
+              ROUTE_NODES[3].id,
+              ROUTE_NODES,
+              ROUTE_EDGES,
+              zoneRiskLevels,
+              new Set()
+            );
+            setActiveRoute(normalRoute);
+          }
+        }}
+        onAssignResponderToIncident={async (incidentId, responderName, unit) => {
+          await incidentService.assignResponder(incidentId, {
+            uid: 'resp-sim-01',
+            name: responderName,
+            unit
+          });
+        }}
+        onNavigateToTab={(tab) => setActiveTab(tab)}
+      />
 
       {/* Disaster Operations Footer */}
       <footer className="border-t border-[#283548] bg-[#111823] py-3 px-4 text-center font-mono text-[0.68rem] text-slate-500">

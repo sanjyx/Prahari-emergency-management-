@@ -48,6 +48,7 @@ export interface VoiceParsedReport {
   landmark: string;
   peopleAffectedCount: number | null;
   peopleTrapped: boolean;
+  peopleAtRisk: boolean;
   roadBlocked: boolean;
   hasInjuriesOrMedical: boolean;
   locationSource: 'gps' | 'extracted' | 'unknown';
@@ -474,7 +475,9 @@ export function parseVoiceEmergencyReport(
     lower.includes('cloudburst') ||
     lower.includes('washed away') ||
     lower.includes('washed out') ||
-    lower.includes('collapse')
+    lower.includes('collapse') ||
+    (lower.includes('entering our village') && lower.includes('need help')) ||
+    (lower.includes('water is entering') && lower.includes('need help'))
   ) {
     severity = 'critical';
   } else if (
@@ -486,7 +489,8 @@ export function parseVoiceEmergencyReport(
     lower.includes('injured') ||
     lower.includes('hurt') ||
     lower.includes('elderly') ||
-    lower.includes('children')
+    lower.includes('children') ||
+    lower.includes('need help')
   ) {
     severity = 'high';
   } else if (lower.includes('minor') || lower.includes('small') || lower.includes('advisory') || lower.includes('slow')) {
@@ -530,9 +534,20 @@ export function parseVoiceEmergencyReport(
     lower.includes('isolated') ||
     lower.includes('unable to cross');
 
+  const peopleAtRisk =
+    peopleTrapped ||
+    lower.includes('need help') ||
+    lower.includes('water is entering') ||
+    lower.includes('entering our village') ||
+    lower.includes('danger') ||
+    lower.includes('rescue') ||
+    peopleAffectedCount !== null;
+
   const roadBlocked =
     lower.includes('road blocked') ||
     lower.includes('road is blocked') ||
+    (lower.includes('road') && lower.includes('blocked')) ||
+    (lower.includes('bridge') && lower.includes('blocked')) ||
     lower.includes('highway blocked') ||
     lower.includes('traffic blocked') ||
     lower.includes('road cut') ||
@@ -612,6 +627,7 @@ export function parseVoiceEmergencyReport(
     landmark,
     peopleAffectedCount,
     peopleTrapped,
+    peopleAtRisk,
     roadBlocked,
     hasInjuriesOrMedical,
     locationSource,

@@ -6,7 +6,7 @@
  * rather than talking directly to Firestore or offline storage.
  */
 
-import { Incident, IncidentStatus, Unsubscribe } from '../types';
+import { AlertItem, EmergencyVoiceReport, Incident, IncidentStatus, Unsubscribe } from '../types';
 import { persistentStore } from './firebaseService';
 
 export const incidentService = {
@@ -25,6 +25,31 @@ export const incidentService = {
   },
 
   /**
+   * Subscribe to emergency voice and field reports
+   */
+  subscribeEmergencyReports(callback: (reports: EmergencyVoiceReport[]) => void): Unsubscribe {
+    try {
+      return persistentStore.subscribeEmergencyReports(callback);
+    } catch (err) {
+      console.error('incidentService.subscribeEmergencyReports failed:', err);
+      callback([]);
+      return () => {};
+    }
+  },
+
+  /**
+   * Create a structured emergency voice/manual report
+   */
+  async createEmergencyReport(report: EmergencyVoiceReport): Promise<EmergencyVoiceReport> {
+    try {
+      return await persistentStore.createEmergencyReport(report);
+    } catch (err) {
+      console.error('incidentService.createEmergencyReport failed:', err);
+      throw err;
+    }
+  },
+
+  /**
    * Create a new emergency incident report
    */
   async createIncident(
@@ -34,6 +59,20 @@ export const incidentService = {
       return await persistentStore.createIncident(incidentData);
     } catch (err) {
       console.error('incidentService.createIncident failed:', err);
+      throw err;
+    }
+  },
+
+  /**
+   * Create an emergency alert item
+   */
+  async createAlert(
+    alertData: Omit<AlertItem, 'id' | 'issued'>
+  ): Promise<AlertItem> {
+    try {
+      return await persistentStore.createAlert(alertData);
+    } catch (err) {
+      console.error('incidentService.createAlert failed:', err);
       throw err;
     }
   },
@@ -67,5 +106,17 @@ export const incidentService = {
       console.error('incidentService.assignResponder failed:', err);
       throw err;
     }
+  },
+
+  /**
+   * Safe data isolation: removes only simulation / demo items
+   */
+  clearSimulationData(scenarioRunId?: string): void {
+    try {
+      persistentStore.clearSimulationData(scenarioRunId);
+    } catch (err) {
+      console.error('incidentService.clearSimulationData failed:', err);
+    }
   }
 };
+

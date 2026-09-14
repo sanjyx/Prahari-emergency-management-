@@ -11,7 +11,7 @@ import {
   Unsubscribe
 } from 'firebase/firestore';
 import { getAuth, Auth, onAuthStateChanged, User, signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
-import { AlertItem, Incident, IncidentStatus, LastKnownLocation, UserProfile, UserRole } from '../types';
+import { AlertItem, EmergencyVoiceReport, Incident, IncidentStatus, LastKnownLocation, UserProfile, UserRole } from '../types';
 import { INITIAL_ALERTS, INITIAL_INCIDENTS, INITIAL_RESPONDERS } from '../data/zones';
 import { offlineSyncManager } from './offlineSync';
 
@@ -100,6 +100,8 @@ class PersistentStore {
   private alertListeners = new Set<(alerts: AlertItem[]) => void>();
   private responderListeners = new Set<(responders: UserProfile[]) => void>();
   private userListeners = new Set<(user: UserProfile) => void>();
+  private emergencyReports: EmergencyVoiceReport[] = [];
+  private reportListeners = new Set<(reports: EmergencyVoiceReport[]) => void>();
 
   constructor() {
     this.initData();
@@ -115,6 +117,9 @@ class PersistentStore {
 
     const cachedResponders = offlineSyncManager.getCachedEntity<UserProfile[]>('responders');
     this.responders = (cachedResponders as any) || [...INITIAL_RESPONDERS];
+
+    const cachedReports = offlineSyncManager.getCachedEntity<EmergencyVoiceReport[]>('emergencyReports');
+    this.emergencyReports = cachedReports || [];
   }
 
   public getCurrentUser(): UserProfile {
@@ -405,6 +410,59 @@ class PersistentStore {
     }
 
     return newAlert;
+  }
+
+  public subscribeEmergencyReports(callback: (reports: EmergencyVoiceReport[]) => void): Unsubscribe {
+    this.reportListeners.add(callback);
+    callback(this.emergencyReports);
+    return () => this.reportListeners.delete(callback);
+  }
+
+  private notifyReports() {
+    offlineSyncManager.cacheEntity('emergencyReports', this.emergencyReports);
+    for (const cb of this.reportListeners) cb([...this.emergencyReports]);
+  }
+
+  public async createEmergencyReport(report: EmergencyVoiceReport): Promise<EmergencyVoiceReport> {
+    this.emergencyReports = [report, ...this.emergencyReports];
+    this.notifyReports();
+
+    if (isRealFirebase && firestoreDb) {
+      try {
+        await setDoc(doc(firestoreDb, 'emergency_reports', report.reportId), report);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `emergency_reports/${report.reportId}`);
+      }
+    }
+    return report;
+  }
+
+  /**
+   * Safe data isolation: removes only simulated/demo items without touching genuine user data
+   */
+  public clearSimulationData(scenarioRunId?: string): void {
+    this.incidents = this.incidents.filter((inc) => {
+      if (scenarioRunId && inc.scenarioRunId) {
+        return inc.scenarioRunId !== scenarioRunId;
+      }
+      return !inc.isSimulation;
+    });
+    this.alerts = this.alerts.filter((alt) => {
+      if (scenarioRunId && alt.scenarioRunId) {
+        return alt.scenarioRunId !== scenarioRunId;
+      }
+      return !alt.isSimulation;
+    });
+    this.emergencyReports = this.emergencyReports.filter((rep) => {
+      if (scenarioRunId && rep.scenarioRunId) {
+        return rep.scenarioRunId !== scenarioRunId;
+      }
+      return !rep.isSimulation;
+    });
+
+    this.notifyIncidents();
+    this.notifyAlerts();
+    this.notifyReports();
   }
 }
 

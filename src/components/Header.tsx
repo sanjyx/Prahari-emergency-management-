@@ -32,6 +32,7 @@ interface HeaderProps {
   isSharingLocation: boolean;
   locationStatus: string | null;
   onFeaturesUpdated?: () => void;
+  onOpenScenarioConsole?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -45,7 +46,8 @@ export const Header: React.FC<HeaderProps> = ({
   onShareLocation,
   isSharingLocation,
   locationStatus,
-  onFeaturesUpdated
+  onFeaturesUpdated,
+  onOpenScenarioConsole
 }) => {
   const [showFeatureModal, setShowFeatureModal] = useState(false);
 
@@ -163,6 +165,21 @@ export const Header: React.FC<HeaderProps> = ({
               <option value="admin" className="bg-slate-900 text-rose-300">Admin</option>
             </select>
           </div>
+
+          {/* Emergency Scenario Mode Button */}
+          {onOpenScenarioConsole && (
+            <button
+              id="header-scenario-mode-btn"
+              type="button"
+              onClick={onOpenScenarioConsole}
+              className="flex items-center gap-1.5 rounded border border-rose-500/50 bg-rose-950/60 px-2.5 py-1 font-mono text-xs font-bold text-rose-300 hover:bg-rose-900/60 hover:border-rose-400 transition-colors shadow-sm"
+              title="Open Controlled Emergency Scenario Simulation Console"
+            >
+              <span className="size-2 rounded-full bg-rose-500 animate-ping" />
+              <span className="hidden sm:inline">Scenario Mode</span>
+              <span className="sm:hidden">Demo</span>
+            </button>
+          )}
 
           {/* Feature Configuration Toggle Button */}
           <button

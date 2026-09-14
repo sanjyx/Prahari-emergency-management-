@@ -1,6 +1,40 @@
 export type RiskLevel = 'Low' | 'Moderate' | 'High' | 'Critical';
 export type Unsubscribe = () => void;
 
+export type SystemStatus = 'NORMAL' | 'WARNING' | 'CRITICAL';
+
+export interface EmergencyVoiceReport {
+  reportId: string;
+  transcript: string;
+  incidentType: IncidentType;
+  severity: IncidentSeverity;
+  location: string;
+  latitude?: number;
+  longitude?: number;
+  lastKnownLocation?: LastKnownLocation;
+  roadBlocked: boolean;
+  peopleAtRisk: boolean;
+  peopleCount?: number;
+  createdAt: number;
+  status: 'pending' | 'sos_created' | 'dispatched' | 'resolved';
+  assignedResponderId?: string;
+  source: 'voice' | 'manual';
+  isSimulation: boolean;
+  scenarioRunId?: string;
+}
+
+export type ScenarioStage = 'DETECT' | 'ASSESS' | 'REPORT' | 'LOCATE' | 'RESPOND';
+export type ScenarioStatus = 'READY' | 'RUNNING' | 'PAUSED' | 'COMPLETED';
+
+export interface ScenarioEventLog {
+  id: string;
+  timestampStr: string;
+  scenarioSeconds: number;
+  title: string;
+  details?: string;
+  type: 'info' | 'warning' | 'critical' | 'success' | 'action';
+}
+
 export interface Shelter {
   name: string;
   capacity: number;
@@ -73,6 +107,8 @@ export interface AlertItem {
   channel: string;
   status: 'Active' | 'Acknowledged' | 'Standby';
   createdBy?: string;
+  isSimulation?: boolean;
+  scenarioRunId?: string;
 }
 
 export type UserRole = 'citizen' | 'responder' | 'authority' | 'admin';
@@ -151,6 +187,10 @@ export interface Incident {
   offlineQueued?: boolean;
   notes?: string[];
   aiTriageSummary?: string;
+  isSimulation?: boolean;
+  scenarioRunId?: string;
+  isSos?: boolean;
+  source?: 'voice' | 'manual' | 'sensor';
 }
 
 export type NetworkMode = 'online' | 'low_connectivity' | 'offline';
