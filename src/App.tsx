@@ -215,7 +215,7 @@ export default function App() {
   };
 
   return (
-    <div key={featureVersion} className="min-h-screen bg-[#0d1219] text-[#e5edf5] flex flex-col font-sans">
+    <div key={featureVersion} className="min-h-screen bg-[#0c1118] text-[#e2e8f0] flex flex-col">
       {/* Top Header & Navigation */}
       <Header
         activeTab={activeTab}
@@ -233,7 +233,7 @@ export default function App() {
       />
 
       {/* Main Content Viewport with Error Isolation */}
-      <main className="flex-1 max-w-7xl mx-auto w-full p-4 sm:p-6">
+      <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6">
         {activeTab === 'dashboard' && (
           <ErrorBoundary moduleName="Dashboard Operations">
             <DashboardView
@@ -430,10 +430,10 @@ export default function App() {
       />
 
       {/* Disaster Operations Footer */}
-      <footer className="border-t border-[#283548] bg-[#111823] py-3 px-4 text-center font-mono text-[0.68rem] text-slate-500">
+      <footer className="border-t border-[#212d3d] bg-[#101722] py-3.5 px-6 text-center font-mono text-xs text-slate-400">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
           <span>PRAHARI Flash Flood &amp; Emergency Management Platform · SIH Government Grade Edition</span>
-          <span>Role: <strong className="text-cyan-400 capitalize">{currentUser.role}</strong> · Status: <strong className="text-emerald-400">Telemetry Active</strong></span>
+          <span>Role: <strong className="text-sky-400 capitalize">{currentUser.role}</strong> · Status: <strong className="text-emerald-400">Telemetry Active</strong></span>
         </div>
       </footer>
     </div>

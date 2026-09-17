@@ -6,22 +6,19 @@ import {
   AlertTriangle,
   CheckCircle,
   MapPin,
-  Flame,
   Clock,
   RotateCcw,
-  Volume2,
-  VolumeX,
-  FileText,
   Radio,
   Check,
-  Send,
   UserCheck,
   ShieldAlert,
-  Edit3
+  Edit3,
+  Loader2,
+  Volume2
 } from 'lucide-react';
 import { EmergencyVoiceReport, Incident, IncidentSeverity, IncidentType, UserProfile, Zone } from '../types';
 import { ZONES } from '../data/zones';
-import { parseVoiceEmergencyReport, VoiceParsedReport } from '../services/aiAssistant';
+import { dbIncidentService, classifyIncidentTranscript, selectDemoResponder, DemoResponder } from '../services/dbIncidentService';
 import { incidentService } from '../services/incidentService';
 
 interface VoiceReportModalProps {
@@ -43,30 +40,30 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
   selectedZone,
   onSubmitIncident,
   onSwitchToManual,
-  isSimulationMode = false,
+  isSimulationMode = true,
   scenarioRunId,
   onResponderAutoAssigned
 }) => {
-  // Speech Recognition state
-  const [isRecording, setIsRecording] = useState(false);
-  const [transcript, setTranscript] = useState('');
-  const [speechSupported, setSpeechSupported] = useState(true);
-  const [micPermissionError, setMicPermissionError] = useState<string | null>(null);
+  // Voice Recording & Transcribing State
+  const [recordingState, setRecordingState] = useState<'idle' | 'recording' | 'processing' | 'transcribing'>('idle');
   const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [transcript, setTranscript] = useState('');
+  const [transcriptionNotice, setTranscriptionNotice] = useState<string | null>(null);
+  const [transcriptionEngine, setTranscriptionEngine] = useState<string>('Hugging Face Whisper Large-v3');
 
-  // Review & Edit state
-  const [parsedReport, setParsedReport] = useState<VoiceParsedReport | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submittedReport, setSubmittedReport] = useState<EmergencyVoiceReport | null>(null);
-
-  // Automatic Responder Assignment Demo State
-  const [countdown, setCountdown] = useState<number | null>(null);
-  const [assignedResponder, setAssignedResponder] = useState<{ name: string; unit: string } | null>(null);
+  // MediaRecorder refs
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<any>(null);
+  const recognitionRef = useRef<any>(null);
+  const transcriptRef = useRef<string>('');
+  const countdownIntervalRef = useRef<any>(null);
 
   // Editable Form fields
   const [title, setTitle] = useState('');
   const [type, setType] = useState<IncidentType>('flash_flood');
-  const [severity, setSeverity] = useState<IncidentSeverity>('critical');
+  const [displayType, setDisplayType] = useState('Flash Flood');
+  const [severity, setSeverity] = useState<IncidentSeverity>('high');
   const [zoneId, setZoneId] = useState(selectedZone.id);
   const [landmark, setLandmark] = useState('');
   const [description, setDescription] = useState('');
@@ -75,43 +72,52 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
   const [roadBlocked, setRoadBlocked] = useState(false);
   const [peopleCount, setPeopleCount] = useState<number | ''>('');
 
-  // GPS Fix
+  // Classification Meta
+  const [classificationExplanation, setClassificationExplanation] = useState('');
+  const [classificationConfidence, setClassificationConfidence] = useState<'High' | 'Needs verification'>('High');
+
+  // GPS Location State
   const [gpsLocation, setGpsLocation] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
-  const [isAcquiringGps, setIsAcquiringGps] = useState(false);
+  const [isLocationManual, setIsLocationManual] = useState(false);
   const [gpsStatus, setGpsStatus] = useState<string | null>(null);
 
-  // Speech Recognition ref & transcript accumulator (prevents stale React state closures)
-  const recognitionRef = useRef<any>(null);
-  const transcriptRef = useRef<string>('');
-  const timerRef = useRef<any>(null);
-  const countdownIntervalRef = useRef<any>(null);
+  // Review & Submit State
+  const [isReviewing, setIsReviewing] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [createdIncidentId, setCreatedIncidentId] = useState<string | null>(null);
+  const [submittedDbId, setSubmittedDbId] = useState<string | null>(null);
 
-  // Check Web Speech API support
-  useEffect(() => {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setSpeechSupported(false);
-    }
-  }, []);
+  // 5-Second DEMO MODE Responder Assignment State
+  const [assignmentStage, setAssignmentStage] = useState<'none' | 'finding' | 'assigned'>('none');
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [assignedResponder, setAssignedResponder] = useState<DemoResponder | null>(null);
 
-  // Request GPS position when modal opens
+  // Reset and acquire location when modal opens
   useEffect(() => {
     if (isOpen) {
-      setSubmittedReport(null);
-      setAssignedResponder(null);
+      setRecordingState('idle');
+      setRecordingSeconds(0);
+      setTranscript('');
+      transcriptRef.current = '';
+      setTranscriptionNotice(null);
+      setIsReviewing(false);
+      setCreatedIncidentId(null);
+      setSubmittedDbId(null);
+      setAssignmentStage('none');
       setCountdown(null);
+      setAssignedResponder(null);
 
+      // Capture GPS
       if (currentUser.lastKnownLocation) {
         setGpsLocation({
           lat: currentUser.lastKnownLocation.lat,
           lng: currentUser.lastKnownLocation.lng,
           accuracy: currentUser.lastKnownLocation.accuracy || 15
         });
-        setGpsStatus(`Last Known Location: ${currentUser.lastKnownLocation.lat.toFixed(4)}°N, ${currentUser.lastKnownLocation.lng.toFixed(4)}°E`);
+        setIsLocationManual(false);
+        setGpsStatus(`GPS Verified: ${currentUser.lastKnownLocation.lat.toFixed(4)}°N, ${currentUser.lastKnownLocation.lng.toFixed(4)}°E`);
       } else if (navigator.geolocation) {
-        setIsAcquiringGps(true);
-        setGpsStatus('Requesting browser GPS fix...');
+        setGpsStatus('Requesting high-accuracy device GPS fix...');
         navigator.geolocation.getCurrentPosition(
           (pos) => {
             setGpsLocation({
@@ -119,24 +125,25 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
               lng: pos.coords.longitude,
               accuracy: Math.round(pos.coords.accuracy)
             });
-            setIsAcquiringGps(false);
-            setGpsStatus(
-              `GPS Fix: ${pos.coords.latitude.toFixed(4)}°N, ${pos.coords.longitude.toFixed(4)}°E (±${Math.round(pos.coords.accuracy)}m)`
-            );
+            setIsLocationManual(false);
+            setGpsStatus(`GPS Fix: ${pos.coords.latitude.toFixed(4)}°N, ${pos.coords.longitude.toFixed(4)}°E (±${Math.round(pos.coords.accuracy)}m)`);
           },
           () => {
-            setIsAcquiringGps(false);
-            setGpsStatus('GPS signal unverified; using sector catchment coordinates.');
+            setIsLocationManual(true);
+            setGpsStatus('Location manually provided (GPS permission denied)');
           },
           { enableHighAccuracy: true, timeout: 6000 }
         );
+      } else {
+        setIsLocationManual(true);
+        setGpsStatus('Location manually provided (GPS unavailable)');
       }
     }
   }, [isOpen, currentUser]);
 
-  // Handle Recording Timer
+  // Recording Timer
   useEffect(() => {
-    if (isRecording) {
+    if (recordingState === 'recording') {
       timerRef.current = setInterval(() => {
         setRecordingSeconds((prev) => prev + 1);
       }, 1000);
@@ -146,13 +153,18 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [isRecording]);
+  }, [recordingState]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch (e) {}
+      }
       if (recognitionRef.current) {
         try {
           recognitionRef.current.stop();
@@ -162,203 +174,267 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
   }, []);
 
   /**
-   * Request microphone permission explicitly via getUserMedia,
-   * then launch SpeechRecognition cleanly.
+   * Start Voice Recording with MediaRecorder (and Web Speech live feedback)
    */
   const startRecording = async () => {
-    setMicPermissionError(null);
+    setTranscriptionNotice(null);
     setTranscript('');
     transcriptRef.current = '';
     setRecordingSeconds(0);
-    setParsedReport(null);
-
-    // 1. Explicit mic permission check
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // Immediately release stream tracks so SpeechRecognition gets exclusive mic access
-        stream.getTracks().forEach((track) => track.stop());
-      } catch (err: any) {
-        console.warn('Microphone permission request failed:', err);
-        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-          setMicPermissionError(
-            'Microphone permission was denied. Please allow microphone access in your browser address bar, or use the manual report box below.'
-          );
-          return;
-        }
-      }
-    }
-
-    // 2. Web Speech API initialization
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setSpeechSupported(false);
-      setMicPermissionError(
-        'Voice recognition is not supported in this browser. You can enter the emergency report manually below.'
-      );
-      return;
-    }
+    audioChunksRef.current = [];
 
     try {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Audio recording API is not supported in this browser.');
+      }
 
-      recognition.onstart = () => {
-        setIsRecording(true);
-      };
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : 'audio/ogg';
 
-      recognition.onresult = (event: any) => {
-        let currentTranscript = '';
-        for (let i = 0; i < event.results.length; i++) {
-          currentTranscript += event.results[i][0].transcript + ' ';
-        }
-        const clean = currentTranscript.trim();
-        transcriptRef.current = clean;
-        setTranscript(clean);
-      };
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = mediaRecorder;
 
-      recognition.onerror = (event: any) => {
-        console.warn('Speech recognition event error:', event.error);
-        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-          setMicPermissionError(
-            'Microphone access denied. You can edit the text directly or type your emergency report.'
-          );
-          setIsRecording(false);
-        } else if (event.error === 'no-speech') {
-          // Keep listening
-        } else {
-          setMicPermissionError(
-            `Speech engine notice (${event.error}). You can continue speaking or edit the text manually.`
-          );
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
         }
       };
 
-      recognition.onend = () => {
-        setIsRecording(false);
+      mediaRecorder.onstop = () => {
+        // Stop stream tracks
+        stream.getTracks().forEach((track) => track.stop());
+        handleAudioRecorded(mimeType);
       };
 
-      recognitionRef.current = recognition;
-      recognition.start();
-    } catch (e: any) {
-      console.error('Failed to start speech recognition:', e);
-      setMicPermissionError(
-        'Unable to initialize audio capture. You can type your emergency report manually.'
+      mediaRecorder.start(250);
+      setRecordingState('recording');
+
+      // Also start browser Web Speech recognition for real-time visual feedback while recording
+      const SpeechRecognition =
+        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        try {
+          const recognition = new SpeechRecognition();
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.lang = 'en-US';
+
+          recognition.onresult = (event: any) => {
+            let cur = '';
+            for (let i = 0; i < event.results.length; i++) {
+              cur += event.results[i][0].transcript + ' ';
+            }
+            const clean = cur.trim();
+            if (clean) {
+              transcriptRef.current = clean;
+              setTranscript(clean);
+            }
+          };
+
+          recognition.onerror = () => {};
+          recognitionRef.current = recognition;
+          recognition.start();
+        } catch (e) {
+          // Web speech is just a live preview helper
+        }
+      }
+    } catch (err: any) {
+      console.warn('Microphone start error:', err);
+      setRecordingState('idle');
+      setTranscriptionNotice(
+        `Microphone access error: ${err.message || 'Permission denied'}. You can type or select a sample transcription below.`
       );
     }
   };
 
+  /**
+   * Stop Recording
+   */
   const stopRecording = () => {
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
       } catch (e) {}
     }
-    setIsRecording(false);
 
-    // Process using transcriptRef.current to avoid stale state closure
-    const text = transcriptRef.current || transcript;
-    if (text.trim()) {
-      processTranscript(text);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      setRecordingState('processing');
+      mediaRecorderRef.current.stop();
+    } else {
+      setRecordingState('idle');
+      const text = transcriptRef.current || transcript;
+      if (text.trim()) {
+        applyTranscriptAndClassify(text.trim());
+      }
     }
   };
 
-  const processTranscript = (textToProcess: string) => {
-    if (!textToProcess.trim()) return;
+  /**
+   * Process the recorded audio chunk and invoke Hugging Face Whisper on backend
+   */
+  const handleAudioRecorded = async (mimeType: string) => {
+    setRecordingState('transcribing');
+    const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
 
-    const parsed = parseVoiceEmergencyReport(
-      textToProcess,
-      gpsLocation || undefined,
-      ZONES
-    );
+    // Fallback transcript from live WebSpeech if available
+    const liveTranscript = transcriptRef.current.trim();
 
-    setParsedReport(parsed);
-    setTitle(parsed.title);
-    setType(parsed.type);
-    setSeverity(parsed.severity);
-    setZoneId(parsed.zoneId);
-    setLandmark(parsed.landmark === 'Unknown (Please verify)' ? '' : parsed.landmark);
-    setDescription(parsed.description);
-    setPeopleTrapped(parsed.peopleTrapped);
-    setPeopleAtRisk(parsed.peopleAtRisk);
-    setRoadBlocked(parsed.roadBlocked);
-    setPeopleCount(parsed.peopleAffectedCount || '');
+    try {
+      // Convert audio blob to base64
+      const reader = new FileReader();
+      const base64Promise = new Promise<string>((resolve, reject) => {
+        reader.onloadend = () => {
+          const result = reader.result as string;
+          resolve(result);
+        };
+        reader.onerror = reject;
+      });
+      reader.readAsDataURL(audioBlob);
+      const base64Audio = await base64Promise;
+
+      // Post to backend server route
+      const response = await fetch('/api/transcribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audioBase64: base64Audio,
+          mimeType
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.success && data.text) {
+        setTranscriptionEngine('Hugging Face Whisper (openai/whisper-large-v3)');
+        setTranscript(data.text);
+        transcriptRef.current = data.text;
+        setTranscriptionNotice(null);
+        applyTranscriptAndClassify(data.text);
+      } else {
+        // Graceful non-crashing fallback
+        const errMsg = data.error || 'Whisper Large-v3 could not process audio.';
+        setTranscriptionEngine('Demo Speech-to-Text Fallback');
+        setTranscriptionNotice(
+          `Whisper Large-v3 notice: ${errMsg} You can verify or edit the transcription below before submitting.`
+        );
+        const fallbackText = liveTranscript || 'Water is rising rapidly near the bridge and road is blocked.';
+        setTranscript(fallbackText);
+        transcriptRef.current = fallbackText;
+        applyTranscriptAndClassify(fallbackText);
+      }
+    } catch (err: any) {
+      console.warn('Whisper API invocation exception:', err);
+      setTranscriptionEngine('Local Speech Fallback');
+      setTranscriptionNotice(
+        `Whisper service offline or timed out: ${err.message}. You can edit the text manually.`
+      );
+      const fallbackText = liveTranscript || 'Water is rising rapidly near the bridge and road is blocked.';
+      setTranscript(fallbackText);
+      transcriptRef.current = fallbackText;
+      applyTranscriptAndClassify(fallbackText);
+    } finally {
+      setRecordingState('idle');
+    }
+  };
+
+  /**
+   * Transparent Keyword & Rule-Based Incident Classification
+   */
+  const applyTranscriptAndClassify = (text: string) => {
+    const classification = classifyIncidentTranscript(text);
+
+    // Map to system IncidentType & Severity
+    let mappedType: IncidentType = 'flash_flood';
+    if (classification.incidentType === 'Landslide') mappedType = 'landslide';
+    else if (classification.incidentType === 'Road Blockage') mappedType = 'road_block';
+    else if (classification.incidentType === 'Rising Water') mappedType = 'river_burst';
+    else if (classification.incidentType === 'Infrastructure Damage') mappedType = 'bridge_damage';
+    else if (classification.incidentType === 'Other Emergency') mappedType = 'trapped_civilians';
+
+    let mappedSev: IncidentSeverity = 'high';
+    if (classification.severity === 'CRITICAL') mappedSev = 'critical';
+    else if (classification.severity === 'HIGH') mappedSev = 'high';
+    else if (classification.severity === 'MODERATE') mappedSev = 'moderate';
+    else if (classification.severity === 'LOW') mappedSev = 'low';
+
+    setDisplayType(classification.incidentType);
+    setType(mappedType);
+    setSeverity(mappedSev);
+    setClassificationExplanation(classification.explanation);
+    setClassificationConfidence(classification.confidence);
+
+    // Title generation
+    setTitle(`${classification.incidentType} Emergency: ${selectedZone.name}`);
+    setDescription(text);
+
+    // Booleans
+    const lower = text.toLowerCase();
+    setPeopleTrapped(lower.includes('trapped') || lower.includes('stranded'));
+    setPeopleAtRisk(lower.includes('trapped') || lower.includes('people') || lower.includes('family') || lower.includes('help'));
+    setRoadBlocked(lower.includes('road') || lower.includes('bridge') || lower.includes('blocked'));
+
+    setIsReviewing(true);
   };
 
   const applySampleTranscript = (sample: string) => {
-    transcriptRef.current = sample;
     setTranscript(sample);
-    processTranscript(sample);
+    transcriptRef.current = sample;
+    applyTranscriptAndClassify(sample);
   };
 
-  const handleManualTranscriptChange = (newText: string) => {
-    transcriptRef.current = newText;
-    setTranscript(newText);
-    processTranscript(newText);
-  };
-
+  /**
+   * Submit Incident to Persistent Database & Trigger 5-Second Demo Responder Assignment
+   */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !description.trim()) return;
+    if (!description.trim()) return;
 
     setIsSubmitting(true);
     try {
       const selectedZ = ZONES.find((z) => z.id === zoneId) || selectedZone;
-      const finalLat = gpsLocation
-        ? gpsLocation.lat
-        : selectedZ.x
-        ? 30.4 + selectedZ.x * 0.01
-        : 30.415;
-      const finalLng = gpsLocation
-        ? gpsLocation.lng
-        : selectedZ.y
-        ? 79.3 + selectedZ.y * 0.01
-        : 79.325;
+      const finalLat = gpsLocation ? gpsLocation.lat : 30.4085 + (selectedZ.x || 30) * 0.005;
+      const finalLng = gpsLocation ? gpsLocation.lng : 79.3254 + (selectedZ.y || 40) * 0.005;
 
-      const reportId = `VREP-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
+      const humanReadableId = `PRH-2026-${Math.floor(1000 + Math.random() * 9000)}`;
 
-      // 1. Store structured Emergency Report in Database
-      const emergencyReport: EmergencyVoiceReport = {
-        reportId,
-        transcript: transcript || description,
-        incidentType: type,
-        severity,
-        location: landmark.trim() || `${selectedZ.name} Corridor`,
+      // 1. Create in backend DB (/api/incidents & Supabase)
+      const dbRecord = await dbIncidentService.createIncident({
+        incident_id: humanReadableId,
+        created_at: new Date().toISOString(),
+        reporter_name: currentUser.name || 'Anonymous Citizen',
+        reporter_contact: currentUser.phone || '+91 94112 00000',
+        transcription: transcript || description,
+        incident_type: displayType,
+        severity: severity.toUpperCase() as any,
         latitude: finalLat,
         longitude: finalLng,
-        lastKnownLocation: currentUser.lastKnownLocation,
-        roadBlocked,
-        peopleAtRisk: peopleAtRisk || peopleTrapped,
-        peopleCount: peopleCount !== '' ? Number(peopleCount) : undefined,
-        createdAt: Date.now(),
-        status: 'sos_created',
-        source: 'voice',
-        isSimulation: isSimulationMode,
-        scenarioRunId
-      };
+        location_name: landmark.trim() || `${selectedZ.name} Catchment`,
+        status: 'NEW',
+        source: 'VOICE',
+        demo_mode: isSimulationMode,
+        notes: `AI-assisted classification: ${displayType} (${severity.toUpperCase()}). ${classificationExplanation}`
+      });
 
-      await incidentService.createEmergencyReport(emergencyReport);
-      setSubmittedReport(emergencyReport);
+      setCreatedIncidentId(dbRecord.incident_id);
+      setSubmittedDbId(dbRecord.id);
 
-      // 2. Create Incident / SOS in Database
+      // 2. Also register in client incident service
       await onSubmitIncident({
-        title,
+        title: title || `${displayType} Reported via Voice`,
         type,
         severity,
         status: 'reported',
-        description,
+        description: transcript || description,
         zoneId: selectedZ.id,
         zoneName: selectedZ.name,
         location: {
           lat: finalLat,
           lng: finalLng,
-          landmark:
-            landmark.trim() ||
-            (gpsLocation
-              ? `GPS ${finalLat.toFixed(4)}°N, ${finalLng.toFixed(4)}°E`
-              : `${selectedZ.name} corridor`),
+          landmark: landmark.trim() || `${selectedZ.name} sector corridor`,
           mapX: selectedZ.x + (Math.random() * 4 - 2),
           mapY: selectedZ.y + (Math.random() * 4 - 2)
         },
@@ -368,69 +444,91 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
           role: currentUser.role,
           contact: currentUser.phone || '+91 94112 00000'
         },
-        aiTriageSummary: `Voice Emergency Verified: ${type.replace(/_/g, ' ').toUpperCase()}. ${
-          peopleAtRisk ? 'People at risk detected. ' : ''
-        }${roadBlocked ? 'Roadway blocked. ' : ''}SOS broadcast initiated.`,
+        aiTriageSummary: `Hugging Face Whisper Voice Dispatch [${humanReadableId}]: ${displayType} (${severity.toUpperCase()}). ${classificationExplanation}`,
         isSimulation: isSimulationMode,
         scenarioRunId,
         isSos: true,
         source: 'voice'
       });
 
-      // 3. In DEMO MODE: Start 5-second automatic responder assignment countdown
+      // 3. Register structured Emergency Voice Report
+      const emergencyReport: EmergencyVoiceReport = {
+        reportId: humanReadableId,
+        transcript: transcript || description,
+        incidentType: type,
+        severity,
+        location: landmark.trim() || `${selectedZ.name} Catchment`,
+        latitude: finalLat,
+        longitude: finalLng,
+        roadBlocked,
+        peopleAtRisk,
+        peopleCount: peopleCount !== '' ? Number(peopleCount) : undefined,
+        createdAt: Date.now(),
+        status: 'sos_created',
+        source: 'voice',
+        isSimulation: isSimulationMode,
+        scenarioRunId
+      };
+      await incidentService.createEmergencyReport(emergencyReport);
+
+      // 4. 5-Second DEMO MODE Responder Assignment
       if (isSimulationMode) {
+        setAssignmentStage('finding');
         setCountdown(5);
-        let currentCount = 5;
-        countdownIntervalRef.current = setInterval(() => {
-          currentCount -= 1;
-          if (currentCount > 0) {
-            setCountdown(currentCount);
+        let secondsLeft = 5;
+
+        countdownIntervalRef.current = setInterval(async () => {
+          secondsLeft -= 1;
+          if (secondsLeft > 0) {
+            setCountdown(secondsLeft);
           } else {
             clearInterval(countdownIntervalRef.current);
             setCountdown(0);
-            const assigned = {
-              name: 'Responder 01 (Capt. Vikram Negi)',
-              unit: 'SDRF Quick Response Unit 3 (Chamoli)'
-            };
-            setAssignedResponder(assigned);
+
+            // Select predefined demo responder
+            const responder = selectDemoResponder(displayType, severity.toUpperCase());
+            setAssignedResponder(responder);
+            setAssignmentStage('assigned');
+
+            // Update database with responder assignment
+            await dbIncidentService.assignResponder(dbRecord.id, {
+              id: responder.id,
+              name: responder.name
+            });
+
             if (onResponderAutoAssigned) {
-              onResponderAutoAssigned(assigned.name, assigned.unit);
+              onResponderAutoAssigned(responder.name, responder.unit);
             }
           }
         }, 1000);
-      } else {
-        // Normal mode: close modal after short delay
-        setTimeout(() => {
-          handleClose();
-        }, 1200);
       }
+    } catch (err: any) {
+      console.error('Failed to submit voice incident:', err);
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const handleClose = () => {
-    if (recognitionRef.current && isRecording) {
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
+    }
+    if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
       } catch (e) {}
     }
-    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
-    setIsRecording(false);
-    setTranscript('');
-    transcriptRef.current = '';
-    setParsedReport(null);
-    setMicPermissionError(null);
-    setSubmittedReport(null);
-    setCountdown(null);
-    setAssignedResponder(null);
     onClose();
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 overflow-y-auto">
       <div className="w-full max-w-2xl rounded-xl border border-slate-700 bg-slate-900 p-6 shadow-2xl my-8">
         {/* Modal Header */}
         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
@@ -441,16 +539,16 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="font-display text-lg font-bold uppercase tracking-wider text-white">
-                  Voice Emergency Reporting
+                  Voice Incident Reporting
                 </h3>
                 {isSimulationMode && (
                   <span className="rounded border border-amber-500/40 bg-amber-950/60 px-1.5 py-0.5 font-mono text-[0.62rem] uppercase tracking-wider text-amber-300">
-                    Simulation Mode
+                    DEMO MODE
                   </span>
                 )}
               </div>
               <p className="font-mono text-xs text-slate-400">
-                Natural speech processing, entity extraction &amp; SOS creation
+                Hugging Face Whisper Large-v3 Speech-to-Text &bull; Instant Dispatch
               </p>
             </div>
           </div>
@@ -463,113 +561,133 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
           </button>
         </div>
 
-        {/* GPS / Location Indicator Strip */}
+        {/* Geolocation Status Bar */}
         <div className="mt-3 flex items-center justify-between rounded border border-slate-800/80 bg-slate-950/60 px-3 py-1.5 font-mono text-[0.68rem] text-slate-400">
           <div className="flex items-center gap-1.5">
-            <MapPin className={`size-3 ${gpsLocation ? 'text-emerald-400' : 'text-slate-500'}`} />
-            <span>
-              {gpsStatus || (gpsLocation ? `GPS: ${gpsLocation.lat.toFixed(4)}°N, ${gpsLocation.lng.toFixed(4)}°E` : 'Locating device...')}
-            </span>
+            <MapPin className={`size-3 ${gpsLocation && !isLocationManual ? 'text-emerald-400' : 'text-amber-400'}`} />
+            <span>{gpsStatus || 'Acquiring GPS coordinates...'}</span>
           </div>
-          {gpsLocation && (
-            <span className="rounded bg-emerald-500/20 px-1.5 py-0.2 font-bold text-emerald-400 border border-emerald-500/40 uppercase">
-              Location Verified
+          {isLocationManual ? (
+            <span className="rounded bg-amber-500/20 px-1.5 py-0.2 font-bold text-amber-300 border border-amber-500/40 uppercase">
+              Location manually provided
             </span>
-          )}
+          ) : gpsLocation ? (
+            <span className="rounded bg-emerald-500/20 px-1.5 py-0.2 font-bold text-emerald-400 border border-emerald-500/40 uppercase">
+              GPS Verified
+            </span>
+          ) : null}
         </div>
 
-        {/* Permission / Unsupported Warnings */}
-        {micPermissionError && (
+        {/* Informational or Fallback Notice */}
+        {transcriptionNotice && (
           <div className="mt-3 rounded border border-amber-500/40 bg-amber-950/30 p-3 text-xs text-amber-200 font-mono">
             <div className="flex items-center gap-2 font-bold text-amber-300 mb-1">
               <AlertTriangle className="size-4" />
-              <span>Microphone Status</span>
+              <span>Speech-to-Text Status</span>
             </div>
-            <p>{micPermissionError}</p>
+            <p>{transcriptionNotice}</p>
           </div>
         )}
 
-        {!speechSupported && (
-          <div className="mt-3 rounded border border-cyan-500/40 bg-cyan-950/30 p-3 text-xs text-cyan-200 font-mono">
-            <div className="flex items-center gap-2 font-bold text-cyan-300 mb-1">
-              <Radio className="size-4" />
-              <span>Web Speech API Standby</span>
-            </div>
-            <p>
-              Voice recognition is not supported in this browser. You can enter the emergency report manually below or click a scenario preset to test extraction.
-            </p>
-          </div>
-        )}
-
-        {/* POST-SUBMISSION / AUTOMATIC RESPONDER ASSIGNMENT VIEW (Demo Mode) */}
-        {submittedReport && (
+        {/* ------------------------------------------------------------- */}
+        {/* POST-SUBMISSION / 5-SECOND DEMO ASSIGNMENT SCREEN             */}
+        {/* ------------------------------------------------------------- */}
+        {createdIncidentId && (
           <div className="mt-4 space-y-4">
+            {/* Report Received Card */}
             <div className="rounded-lg border border-emerald-500/40 bg-emerald-950/30 p-4">
-              <div className="flex items-center gap-2 font-display text-base font-bold uppercase text-emerald-300">
-                <CheckCircle className="size-5 text-emerald-400" />
-                <span>Emergency Report &amp; SOS Dispatched to Database</span>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 font-display text-base font-bold uppercase text-emerald-300">
+                  <CheckCircle className="size-5 text-emerald-400" />
+                  <span>Report Submitted &bull; Report Received</span>
+                </div>
+                <span className="rounded bg-emerald-500/20 px-2 py-0.5 font-mono text-xs font-bold text-emerald-300 border border-emerald-500/30">
+                  Status: {assignmentStage === 'assigned' ? 'ASSIGNED' : 'NEW'}
+                </span>
               </div>
-              <p className="mt-1 font-mono text-xs text-slate-300">
-                Report ID: <strong className="text-white">{submittedReport.reportId}</strong> | Type:{' '}
-                <span className="uppercase text-emerald-300">{submittedReport.incidentType}</span> | Severity:{' '}
-                <span className="uppercase text-rose-300">{submittedReport.severity}</span>
+              <p className="mt-2 font-mono text-sm text-slate-200">
+                Incident ID: <strong className="text-white text-base tracking-wider">{createdIncidentId}</strong>
+              </p>
+              <p className="mt-1 font-mono text-xs text-slate-400">
+                Type: <strong className="text-cyan-300 uppercase">{displayType}</strong> &bull; Severity:{' '}
+                <strong className="text-rose-400 uppercase">{severity}</strong> &bull; Location:{' '}
+                <span className="text-slate-300">{landmark || selectedZone.name}</span>
               </p>
             </div>
 
-            {/* 5-second Automatic Responder Assignment Countdown */}
+            {/* 5-Second Automatic Responder Assignment Flow */}
             {isSimulationMode && (
               <div className="rounded-lg border border-cyan-500/40 bg-cyan-950/30 p-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 font-display text-sm font-bold uppercase text-cyan-200">
                     <UserCheck className="size-4 text-cyan-400" />
-                    <span>Automatic Responder Dispatch</span>
-                  </div>
-                  {countdown !== null && countdown > 0 && (
-                    <span className="rounded border border-cyan-500/50 bg-cyan-900/60 px-2 py-0.5 font-mono text-xs font-bold text-cyan-300 animate-pulse">
-                      Assigning in {countdown}s...
+                    <span>
+                      {assignmentStage === 'assigned'
+                        ? 'Responder Assigned'
+                        : 'Finding nearest available responder...'}
                     </span>
-                  )}
+                  </div>
+                  <span className="rounded border border-cyan-500/30 bg-cyan-950/80 px-2 py-0.5 font-mono text-[0.65rem] uppercase text-cyan-300">
+                    DEMO MODE &mdash; Simulated responder assignment
+                  </span>
                 </div>
 
-                {countdown !== null && countdown > 0 ? (
+                {assignmentStage === 'finding' && (
                   <div className="mt-3">
                     <div className="flex items-center justify-between font-mono text-xs text-slate-300 mb-1.5">
-                      <span>Matching nearest high-altitude mountain rescue unit...</span>
-                      <strong className="text-cyan-400">{countdown}s</strong>
+                      <span className="flex items-center gap-1.5">
+                        <Loader2 className="size-3.5 animate-spin text-cyan-400" />
+                        Querying alpine quick-reaction units...
+                      </span>
+                      <strong className="text-cyan-400 font-bold">{countdown}s</strong>
                     </div>
-                    {/* Progress Bar */}
+                    {/* Animated Progress Bar */}
                     <div className="h-2 w-full overflow-hidden rounded bg-slate-800">
                       <div
-                        className="h-full bg-cyan-500 transition-all duration-1000"
-                        style={{ width: `${((5 - countdown) / 5) * 100}%` }}
+                        className="h-full bg-cyan-500 transition-all duration-1000 ease-linear"
+                        style={{ width: `${((5 - (countdown || 0)) / 5) * 100}%` }}
                       />
                     </div>
                   </div>
-                ) : assignedResponder ? (
-                  <div className="mt-3 rounded border border-emerald-500/40 bg-emerald-950/40 p-3 font-mono text-xs">
-                    <div className="flex items-center gap-2 font-bold text-emerald-300">
-                      <Check className="size-4" />
-                      <span>✓ Responder Assigned</span>
-                    </div>
-                    <div className="mt-1.5 flex flex-wrap items-center justify-between text-slate-200">
-                      <span>🚑 {assignedResponder.name}</span>
+                )}
+
+                {assignmentStage === 'assigned' && assignedResponder && (
+                  <div className="mt-3 rounded border border-emerald-500/40 bg-emerald-950/40 p-3 font-mono text-xs space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 font-bold text-emerald-300">
+                        <Check className="size-4 text-emerald-400" />
+                        <span>✓ Responder Assigned</span>
+                      </div>
                       <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-[0.68rem] font-bold text-emerald-300">
-                        STATUS: EN ROUTE
+                        STATUS: ASSIGNED
                       </span>
                     </div>
-                    <p className="mt-1 text-[0.7rem] text-slate-400">
-                      Destination: {submittedReport.location} | Units: {assignedResponder.unit}
-                    </p>
+
+                    <div className="rounded bg-slate-900/90 p-2.5 border border-slate-800 space-y-1">
+                      <div className="text-white font-bold flex items-center justify-between">
+                        <span>🚑 {assignedResponder.name} ({assignedResponder.id})</span>
+                        <span className="text-cyan-400 font-normal">{assignedResponder.phone}</span>
+                      </div>
+                      <div className="text-slate-400 text-[0.72rem]">
+                        Unit: {assignedResponder.unit}
+                      </div>
+                      <div className="text-slate-400 text-[0.72rem]">
+                        Dispatch Timestamp: {new Date().toLocaleTimeString()} &bull; ETA: ~8 mins
+                      </div>
+                    </div>
                   </div>
-                ) : null}
+                )}
               </div>
             )}
 
-            <div className="flex justify-end pt-2">
+            <div className="flex items-center justify-between pt-2">
+              <span className="font-mono text-[0.7rem] text-slate-500">
+                Persistent database record saved. Live authority dashboard updated.
+              </span>
               <button
                 type="button"
                 onClick={handleClose}
-                className="rounded bg-slate-800 px-4 py-2 font-mono text-xs font-bold text-white hover:bg-slate-700"
+                className="rounded bg-cyan-600 px-5 py-2 font-mono text-xs font-bold text-white hover:bg-cyan-500 shadow-md"
               >
                 Close &amp; View on Dashboard
               </button>
@@ -577,13 +695,15 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
           </div>
         )}
 
-        {/* Step 1: Recording / Speech Input / Manual Input View */}
-        {!submittedReport && !parsedReport && (
+        {/* ------------------------------------------------------------- */}
+        {/* STEP 1: VOICE RECORDING & TRANSCRIPTION INTERACTION           */}
+        {/* ------------------------------------------------------------- */}
+        {!createdIncidentId && !isReviewing && (
           <div className="mt-4 space-y-4 text-center">
             <div className="rounded-lg border border-slate-800 bg-slate-950/80 p-6">
-              {/* Mic Icon & Pulsing Waves */}
+              {/* Pulsing Mic Button */}
               <div className="relative mx-auto flex size-24 items-center justify-center">
-                {isRecording && (
+                {recordingState === 'recording' && (
                   <>
                     <span className="absolute size-24 rounded-full bg-rose-500/20 animate-ping" />
                     <span className="absolute size-20 rounded-full bg-rose-500/30 animate-pulse" />
@@ -591,149 +711,160 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
                 )}
                 <button
                   type="button"
-                  id="voice-modal-mic-btn"
-                  onClick={isRecording ? stopRecording : startRecording}
-                  className={`relative z-10 flex size-16 items-center justify-center rounded-full transition-all shadow-xl ${
-                    isRecording
+                  id="start-voice-recording-btn"
+                  onClick={recordingState === 'recording' ? stopRecording : startRecording}
+                  disabled={recordingState === 'processing' || recordingState === 'transcribing'}
+                  className={`relative z-10 flex size-16 items-center justify-center rounded-full transition-all shadow-xl disabled:opacity-50 ${
+                    recordingState === 'recording'
                       ? 'bg-rose-600 text-white ring-4 ring-rose-500/50'
                       : 'bg-slate-800 text-slate-200 hover:bg-rose-600 hover:text-white border border-slate-700'
                   }`}
-                  title={isRecording ? 'Click to stop listening' : 'Click to start speaking'}
+                  title={recordingState === 'recording' ? 'Click to Stop Recording' : 'Click to Start Recording'}
                 >
-                  {isRecording ? (
-                    <MicOff className="size-7 animate-bounce" />
+                  {recordingState === 'recording' ? (
+                    <MicOff className="size-7" />
+                  ) : recordingState === 'processing' || recordingState === 'transcribing' ? (
+                    <Loader2 className="size-7 animate-spin text-cyan-400" />
                   ) : (
                     <Mic className="size-7" />
                   )}
                 </button>
               </div>
 
-              {/* Status Message */}
+              {/* Recording State Text */}
               <div className="mt-3">
                 <span className="font-display font-bold uppercase tracking-wider text-sm text-white">
-                  {isRecording ? 'Listening to Emergency Speech...' : 'Press Microphone to Speak'}
+                  {recordingState === 'recording'
+                    ? 'Recording...'
+                    : recordingState === 'processing'
+                    ? 'Processing Audio...'
+                    : recordingState === 'transcribing'
+                    ? 'Transcribing with Hugging Face Whisper...'
+                    : 'Click to Start Recording'}
                 </span>
                 <p className="mt-0.5 font-mono text-xs text-slate-400">
-                  {isRecording
-                    ? `Recording: 00:${recordingSeconds < 10 ? '0' : ''}${recordingSeconds} — Live speech transcription active`
-                    : 'Speak naturally or use the manual report box below'}
+                  {recordingState === 'recording' ? (
+                    <span className="text-rose-400 font-bold flex items-center justify-center gap-1">
+                      <span className="size-2 rounded-full bg-rose-500 animate-ping inline-block" />
+                      Recording: 00:{recordingSeconds < 10 ? '0' : ''}{recordingSeconds}
+                    </span>
+                  ) : recordingState === 'transcribing' ? (
+                    'Running openai/whisper-large-v3 model via secure server endpoint...'
+                  ) : (
+                    'Press to record emergency speech or pick a demo scenario below'
+                  )}
                 </p>
               </div>
 
-              {/* Editable Live Transcript Display */}
+              {/* Stop Recording button if recording */}
+              {recordingState === 'recording' && (
+                <div className="mt-4">
+                  <button
+                    type="button"
+                    onClick={stopRecording}
+                    className="inline-flex items-center gap-1.5 rounded bg-rose-600 px-6 py-2 font-mono text-xs font-bold text-white hover:bg-rose-500 shadow-lg"
+                  >
+                    <MicOff className="size-4" />
+                    <span>Stop Recording &amp; Transcribe</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Editable Live Transcript Area */}
               <div className="mt-4 rounded border border-slate-800 bg-slate-900 p-3 text-left">
                 <div className="flex items-center justify-between mb-1">
                   <span className="label-caps text-slate-400">
-                    Live Speech Transcription (Editable):
+                    Spoken Voice Transcription:
                   </span>
-                  <span className="font-mono text-[0.62rem] text-slate-500">
-                    You can type or edit directly
+                  <span className="font-mono text-[0.62rem] text-cyan-400 flex items-center gap-1">
+                    <Edit3 className="size-3" /> Editable
                   </span>
                 </div>
                 <textarea
                   rows={3}
                   value={transcript}
-                  onChange={(e) => handleManualTranscriptChange(e.target.value)}
-                  placeholder="Spoken words will appear here in real time... Or type your report directly."
+                  onChange={(e) => {
+                    setTranscript(e.target.value);
+                    transcriptRef.current = e.target.value;
+                  }}
+                  placeholder="Spoken words will appear here... You can also type directly or select a test scenario."
                   className="w-full rounded border border-slate-800 bg-slate-950 px-2.5 py-1.5 font-mono text-xs text-cyan-200 outline-none focus:border-cyan-500 resize-none"
                 />
               </div>
 
-              {/* Action Buttons while recording or text available */}
-              <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
-                {isRecording && (
+              {/* Process / Extract Button */}
+              {transcript.trim().length > 0 && recordingState === 'idle' && (
+                <div className="mt-4 flex justify-center gap-3">
                   <button
                     type="button"
-                    onClick={stopRecording}
-                    className="flex items-center gap-1.5 rounded bg-emerald-600 px-5 py-2 font-mono text-xs font-bold text-white hover:bg-emerald-500 shadow-md"
-                  >
-                    <Check className="size-4" />
-                    <span>Done Speaking &amp; Extract</span>
-                  </button>
-                )}
-
-                {transcript.trim().length > 0 && !isRecording && (
-                  <button
-                    type="button"
-                    onClick={() => processTranscript(transcript)}
-                    className="flex items-center gap-1.5 rounded bg-cyan-600 px-5 py-2 font-mono text-xs font-bold text-white hover:bg-cyan-500 shadow-md"
+                    onClick={() => applyTranscriptAndClassify(transcript)}
+                    className="flex items-center gap-1.5 rounded bg-cyan-600 px-6 py-2 font-mono text-xs font-bold text-white hover:bg-cyan-500 shadow-md"
                   >
                     <Sparkles className="size-4" />
-                    <span>Extract Emergency Data →</span>
+                    <span>Process &amp; Review Report &rarr;</span>
                   </button>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (recognitionRef.current) {
-                      try {
-                        recognitionRef.current.stop();
-                      } catch (e) {}
-                    }
-                    setIsRecording(false);
-                    setTranscript('');
-                    transcriptRef.current = '';
-                  }}
-                  className="rounded border border-slate-700 px-4 py-2 font-mono text-xs text-slate-400 hover:bg-slate-800"
-                >
-                  Clear
-                </button>
-              </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTranscript('');
+                      transcriptRef.current = '';
+                    }}
+                    className="rounded border border-slate-700 px-3 py-2 font-mono text-xs text-slate-400 hover:text-white"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
             </div>
 
-            {/* Quick Testing Voice Samples (Includes User Required Scenario) */}
+            {/* Quick Demo Test Scenarios */}
             <div className="rounded border border-slate-800/80 bg-slate-950/50 p-3 text-left">
               <span className="label-caps block text-cyan-400 mb-2">
-                Simulate Spoken Emergency Scenarios (1-Click NLP Test)
+                Quick Demo Test Phrases (1-Click Whisper Speech Test)
               </span>
               <div className="space-y-2">
-                {/* User Explicit Required Scenario */}
                 <button
                   type="button"
-                  id="sample-transcript-demo"
                   onClick={() =>
                     applySampleTranscript(
-                      'Water is entering our village and the road near the bridge is blocked. We need help.'
+                      'Water is rising rapidly near the bridge and people need help.'
                     )
                   }
                   className="w-full rounded border border-rose-500/40 bg-rose-950/30 p-2.5 text-left font-mono text-xs text-rose-200 hover:border-rose-400 hover:bg-rose-900/40 transition-colors"
                 >
-                  <div className="flex items-center justify-between mb-0.5">
-                    <strong className="text-rose-300 font-bold">Demo Emergency Transcript (Required):</strong>
-                    <span className="rounded bg-rose-500/20 px-1.5 py-0.2 text-[0.62rem] text-rose-300 font-bold uppercase">
-                      Recommended
-                    </span>
-                  </div>
-                  "Water is entering our village and the road near the bridge is blocked. We need help."
+                  <strong className="text-rose-300 block mb-0.5">Rising Water / Rapid Inundation:</strong>
+                  "Water is rising rapidly near the bridge and people need help."
                 </button>
 
                 <button
                   type="button"
                   onClick={() =>
                     applySampleTranscript(
-                      'There is a massive landslide near Badrinath highway km 14. Three people are trapped in a car and the main road is completely blocked.'
+                      'Major landslide blocking the main highway at Chamoli, vehicles trapped.'
                     )
                   }
                   className="w-full rounded border border-slate-800 bg-slate-900 p-2 text-left font-mono text-xs text-slate-300 hover:border-slate-700 hover:text-white transition-colors"
                 >
-                  <strong className="text-cyan-300">Scenario B:</strong> "Massive landslide near Badrinath highway km 14. Three people are trapped in a car and the main road is completely blocked."
+                  <strong className="text-cyan-300 block mb-0.5">Landslide &amp; Road Blockage:</strong>
+                  "Major landslide blocking the main highway at Chamoli, vehicles trapped."
                 </button>
 
                 <button
                   type="button"
                   onClick={() =>
                     applySampleTranscript(
-                      'Teesta river has burst its banks near Old Confluence Ghat. Water entering lower market, 5 families need urgent boat evacuation.'
+                      'Minor waterlogging on the road, traffic moving slowly.'
                     )
                   }
                   className="w-full rounded border border-slate-800 bg-slate-900 p-2 text-left font-mono text-xs text-slate-300 hover:border-slate-700 hover:text-white transition-colors"
                 >
-                  <strong className="text-amber-300">Scenario C:</strong> "Teesta river has burst its banks near Old Confluence Ghat. Water entering lower market, 5 families need urgent boat evacuation."
+                  <strong className="text-amber-300 block mb-0.5">Minor Waterlogging:</strong>
+                  "Minor waterlogging on the road, traffic moving slowly."
                 </button>
               </div>
             </div>
 
+            {/* Switch to Manual Form */}
             <div className="flex items-center justify-between pt-2 border-t border-slate-800 text-xs font-mono">
               <button
                 type="button"
@@ -743,7 +874,7 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
                 }}
                 className="text-slate-400 hover:text-cyan-300 underline"
               >
-                Prefer typing? Switch to Manual Form →
+                Prefer typing? Switch to Manual Form &rarr;
               </button>
               <button
                 type="button"
@@ -756,39 +887,40 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
           </div>
         )}
 
-        {/* Step 2: Structured Review & Edit Form with "Confirm & Send SOS" */}
-        {!submittedReport && parsedReport && (
+        {/* ------------------------------------------------------------- */}
+        {/* STEP 2: REVIEW, EDIT & SUBMIT REPORT                          */}
+        {/* ------------------------------------------------------------- */}
+        {!createdIncidentId && isReviewing && (
           <form onSubmit={handleSubmit} className="mt-4 space-y-4 text-xs">
-            {/* Extraction AI Confidence Banner */}
-            <div className="rounded border border-purple-500/40 bg-purple-950/20 p-3">
+            {/* AI-Assisted Incident Classification Banner */}
+            <div className="rounded-lg border border-sky-500/40 bg-[#162334] p-3.5">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5 font-bold text-purple-300">
-                  <Sparkles className="size-4" />
-                  <span>AI Extracted Emergency Report</span>
+                <div className="flex items-center gap-2 font-bold text-sky-300">
+                  <Sparkles className="size-4 text-sky-400" />
+                  <span>AI-assisted incident classification</span>
+                  <span className="rounded bg-sky-500/20 px-2 py-0.5 font-mono text-xs text-sky-300 border border-sky-500/30">
+                    {classificationConfidence}
+                  </span>
                 </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    setParsedReport(null);
-                    setTranscript('');
-                    transcriptRef.current = '';
-                  }}
+                  onClick={() => setIsReviewing(false)}
                   className="flex items-center gap-1 font-mono text-[0.68rem] text-slate-400 hover:text-white"
                 >
                   <RotateCcw className="size-3" />
                   <span>Re-record</span>
                 </button>
               </div>
-              <p className="mt-1 font-mono text-[0.68rem] text-slate-400">
-                Extracted from spoken input. Review and edit any field before official broadcast.
+              <p className="mt-1 font-mono text-[0.68rem] text-slate-300">
+                {classificationExplanation}
               </p>
             </div>
 
-            {/* Extracted Key Indicators Highlight Strip */}
+            {/* Extracted Key Indicators */}
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 font-mono text-[0.7rem]">
               <div className="rounded border border-slate-800 bg-slate-950 p-2">
                 <span className="text-slate-400 block text-[0.62rem] uppercase">Incident Type</span>
-                <span className="font-bold text-white uppercase">{type.replace(/_/g, ' ')}</span>
+                <span className="font-bold text-white uppercase">{displayType}</span>
               </div>
               <div className="rounded border border-rose-500/40 bg-rose-950/30 p-2">
                 <span className="text-rose-400 block text-[0.62rem] uppercase">Severity</span>
@@ -809,7 +941,7 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
             {/* Editable Transcript Field */}
             <div className="rounded border border-slate-800 bg-slate-950 p-2.5">
               <div className="flex items-center justify-between mb-1">
-                <span className="label-caps text-slate-400">Spoken Voice Transcript:</span>
+                <span className="label-caps text-slate-400">Transcription (User can edit/correct):</span>
                 <span className="font-mono text-[0.62rem] text-cyan-400 flex items-center gap-1">
                   <Edit3 className="size-3" /> Editable
                 </span>
@@ -819,7 +951,7 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
                 value={transcript}
                 onChange={(e) => {
                   setTranscript(e.target.value);
-                  transcriptRef.current = e.target.value;
+                  setDescription(e.target.value);
                 }}
                 className="w-full rounded border border-slate-800 bg-slate-900 px-2 py-1 font-mono text-xs text-slate-200 outline-none focus:border-cyan-500 resize-none"
               />
@@ -836,39 +968,47 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
                   required
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-200 outline-none focus:border-cyan-500"
+                  className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-200 outline-none focus:border-cyan-500 font-mono text-xs"
                 />
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div>
-                  <label className="font-semibold text-slate-200 block mb-1">Hazard Category *</label>
+                  <label className="font-semibold text-slate-200 block mb-1">Incident Type *</label>
                   <select
-                    value={type}
-                    onChange={(e) => setType(e.target.value as IncidentType)}
-                    className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-200 outline-none focus:border-cyan-500"
+                    value={displayType}
+                    onChange={(e) => {
+                      const dt = e.target.value;
+                      setDisplayType(dt);
+                      if (dt === 'Landslide') setType('landslide');
+                      else if (dt === 'Road Blockage') setType('road_block');
+                      else if (dt === 'Rising Water') setType('river_burst');
+                      else if (dt === 'Infrastructure Damage') setType('bridge_damage');
+                      else if (dt === 'Other Emergency') setType('trapped_civilians');
+                      else setType('flash_flood');
+                    }}
+                    className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-200 outline-none focus:border-cyan-500 font-mono text-xs"
                   >
-                    <option value="flash_flood">Flash Flood</option>
-                    <option value="landslide">Landslide / Debris</option>
-                    <option value="river_burst">River Bank Breach</option>
-                    <option value="bridge_damage">Bridge / Culvert Damage</option>
-                    <option value="road_block">Road Blockage</option>
-                    <option value="trapped_civilians">Trapped Civilians</option>
-                    <option value="medical_emergency">Medical Emergency</option>
+                    <option value="Flash Flood">Flash Flood</option>
+                    <option value="Rising Water">Rising Water</option>
+                    <option value="Landslide">Landslide</option>
+                    <option value="Road Blockage">Road Blockage</option>
+                    <option value="Infrastructure Damage">Infrastructure Damage</option>
+                    <option value="Other Emergency">Other Emergency</option>
                   </select>
                 </div>
 
                 <div>
-                  <label className="font-semibold text-slate-200 block mb-1">Severity Level *</label>
+                  <label className="font-semibold text-slate-200 block mb-1">Severity *</label>
                   <select
                     value={severity}
                     onChange={(e) => setSeverity(e.target.value as IncidentSeverity)}
-                    className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-200 outline-none focus:border-cyan-500 font-bold"
+                    className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-200 outline-none focus:border-cyan-500 font-mono text-xs font-bold"
                   >
-                    <option value="low">Low (Monitoring)</option>
-                    <option value="moderate">Moderate (Advisory)</option>
-                    <option value="high">High (Evacuation Ready)</option>
-                    <option value="critical">Critical (Immediate Life Threat)</option>
+                    <option value="low">LOW</option>
+                    <option value="moderate">MODERATE</option>
+                    <option value="high">HIGH</option>
+                    <option value="critical">CRITICAL</option>
                   </select>
                 </div>
 
@@ -877,7 +1017,7 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
                   <select
                     value={zoneId}
                     onChange={(e) => setZoneId(e.target.value)}
-                    className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-200 outline-none focus:border-cyan-500"
+                    className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-200 outline-none focus:border-cyan-500 font-mono text-xs"
                   >
                     {ZONES.map((z) => (
                       <option key={z.id} value={z.id}>
@@ -891,30 +1031,30 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
                   <label className="font-semibold text-slate-200 block mb-1">
-                    Landmark / Location Reference
+                    Landmark / Location Name
                   </label>
                   <input
                     type="text"
-                    placeholder="e.g. Village Bridge Approach"
+                    placeholder="e.g. Near Chamoli Suspension Bridge"
                     value={landmark}
                     onChange={(e) => setLandmark(e.target.value)}
-                    className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-200 outline-none focus:border-cyan-500"
+                    className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-200 outline-none focus:border-cyan-500 font-mono text-xs"
                   />
                 </div>
 
                 <div>
                   <label className="font-semibold text-slate-200 block mb-1">
-                    People Affected / Trapped
+                    People Affected / Trapped (Optional)
                   </label>
                   <input
                     type="number"
                     min="0"
-                    placeholder="e.g. 3"
+                    placeholder="e.g. 4"
                     value={peopleCount}
                     onChange={(e) =>
                       setPeopleCount(e.target.value ? parseInt(e.target.value, 10) : '')
                     }
-                    className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-200 outline-none focus:border-cyan-500"
+                    className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-200 outline-none focus:border-cyan-500 font-mono text-xs"
                   />
                 </div>
               </div>
@@ -928,7 +1068,7 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
                     onChange={(e) => setPeopleAtRisk(e.target.checked)}
                     className="size-4 rounded border-slate-700 bg-slate-900 text-rose-600 focus:ring-0"
                   />
-                  <span>People at Risk / Need Urgent Help</span>
+                  <span>People at Risk / Urgently Needed Evacuation</span>
                 </label>
 
                 <label className="flex items-center gap-2 cursor-pointer font-mono text-xs text-slate-300">
@@ -938,45 +1078,30 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
                     onChange={(e) => setRoadBlocked(e.target.checked)}
                     className="size-4 rounded border-slate-700 bg-slate-900 text-amber-600 focus:ring-0"
                   />
-                  <span>Road / Bridge Blocked</span>
+                  <span>Road or Bridge Submerged / Inaccessible</span>
                 </label>
-              </div>
-
-              <div>
-                <label className="font-semibold text-slate-200 block mb-1">
-                  Emergency Situation Description *
-                </label>
-                <textarea
-                  required
-                  rows={2}
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-slate-200 outline-none focus:border-cyan-500"
-                />
               </div>
             </div>
 
-            {/* Reporter Meta Preview */}
+            {/* Reporter Meta & Demo Mode Notice */}
             <div className="rounded border border-slate-800 bg-slate-950/60 p-2.5 font-mono text-[0.68rem] text-slate-400 flex flex-wrap items-center justify-between gap-2">
               <div>
-                Report Source: <strong className="text-white">Voice Extraction Engine</strong> | User:{' '}
+                Source: <strong className="text-white">VOICE (Whisper)</strong> &bull; Reporter:{' '}
                 <span className="text-cyan-300">{currentUser.name}</span>
               </div>
-              <div>
-                Target Catchment: <span className="text-white">{selectedZone.name}</span>
+              <div className="text-amber-400">
+                DEMO MODE: Automated 5-second simulated responder assignment active
               </div>
             </div>
 
-            {/* Action Bar with CONFIRM & SEND SOS */}
+            {/* Submission Action Bar */}
             <div className="flex items-center justify-between border-t border-slate-800 pt-3">
               <button
                 type="button"
-                onClick={() => {
-                  setParsedReport(null);
-                }}
+                onClick={() => setIsReviewing(false)}
                 className="rounded border border-slate-700 px-3 py-2 font-mono text-xs text-slate-400 hover:bg-slate-800"
               >
-                ← Back
+                &larr; Back
               </button>
 
               <div className="flex items-center gap-2">
@@ -989,12 +1114,12 @@ export const VoiceReportModal: React.FC<VoiceReportModalProps> = ({
                 </button>
                 <button
                   type="submit"
-                  id="confirm-send-sos-btn"
+                  id="submit-voice-report-btn"
                   disabled={isSubmitting}
                   className="flex items-center gap-2 rounded bg-rose-600 px-6 py-2.5 font-mono text-xs font-bold text-white hover:bg-rose-500 disabled:opacity-50 shadow-xl"
                 >
                   <ShieldAlert className="size-4 animate-pulse" />
-                  <span>{isSubmitting ? 'Transmitting SOS...' : '[ CONFIRM & SEND SOS ]'}</span>
+                  <span>{isSubmitting ? 'Submitting Report...' : 'Submit Report'}</span>
                 </button>
               </div>
             </div>

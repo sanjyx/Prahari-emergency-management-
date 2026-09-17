@@ -329,7 +329,7 @@ export const ScenarioConsole: React.FC<ScenarioConsoleProps> = ({
   const stages: ScenarioStage[] = ['DETECT', 'ASSESS', 'REPORT', 'LOCATE', 'RESPOND'];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 backdrop-blur-md overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 overflow-y-auto">
       <div className="w-full max-w-4xl rounded-xl border border-rose-500/40 bg-slate-950 p-5 shadow-2xl my-6">
         {/* Emergency Scenario Mode Top Bar */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
@@ -578,9 +578,9 @@ export const ScenarioConsole: React.FC<ScenarioConsoleProps> = ({
             <button
               type="button"
               onClick={onOpenVoiceModal}
-              className="flex items-center gap-1.5 rounded border border-purple-500/50 bg-purple-950/40 px-3 py-1.5 font-mono text-xs text-purple-300 hover:bg-purple-900/50"
+              className="flex items-center gap-2 rounded border border-sky-500/50 bg-[#162334] px-3 py-1.5 font-mono text-xs text-sky-300 hover:bg-[#1e324b]"
             >
-              <Volume2 className="size-3.5 text-purple-400" />
+              <Volume2 className="size-3.5 text-sky-400" />
               <span>Open Voice Emergency Reporter</span>
             </button>
 

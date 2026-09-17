@@ -151,7 +151,12 @@ export type IncidentStatus =
   | 'assigned'
   | 'in_progress'
   | 'resolved'
-  | 'closed';
+  | 'closed'
+  | 'NEW'
+  | 'PROCESSING'
+  | 'ASSIGNED'
+  | 'ACKNOWLEDGED'
+  | 'RESOLVED';
 
 export interface Incident {
   id: string;
